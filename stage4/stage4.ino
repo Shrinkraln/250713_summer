@@ -54,39 +54,50 @@ void handleRoot() {
                 "    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
                 "    <title>ESP32网页控制LED</title>\n"
                 "    <script>\n"
-                "     fetch(\"/status\")  // 向 ESP32 请求 LED 状态\n"
+                "     function fetchStatus (){fetch(\"/status\")  // 向 ESP32 请求 LED 状态\n"//fetch就是访问，会激发server.on
                 "        .then(res => res.text())\n"  //将返回对象转化为纯文本
                 "        .then(text => {\n"
-                "            document.getElementById(\"state\").innerText = text;\n"  //找到网页中ID为"state"的HTML元素，并将其文本内容设置为text变量的值
-                "        });\n"
+                "            document.getElementById(\"status\").innerText = text;\n"  //找到网页中ID为"status"的HTML元素，并将其文本内容设置为text变量的值
+                "        });}\n"
+                "     function fetchData(){"
+                "        fetch(\"/data\")"
+                "         .then(res =>res.json())\n"
+                "         .then(data =>{\n"
+                "             document.getElementById(\"temp\").textContent = data.temperature;\n"
+                "             document.getElementById(\"humidity\").textContent = data.humidity;\n"
+                "         });}\n"
+                "       fetchStatus();"
+                "       fetchData();"
+                "       setInterval(fetchStatus,1000);"
+                "       setInterval (fetchData,3000);"
                 "    </script>\n"
                 "</head>\n"
                 "<body>\n"
                 "  <h1>控制LED灯</h1>\n"
-                "  <h2>当前状态：<span id=\"state\"></span></h2>\n"
+                "  <h2>当前状态：<span id=\"status\"></span></h2>\n"
                 "  <button onclick=\"turnOn()\">打开</button>\n"  //点击按钮时，调用turnOn()函数，向ESP32发送"/index/on"请求
                 "  <button onclick=\"turnOff()\">关闭</button>\n"
                 "  \n"
                 "  <script>\n"
                 "    function turnOn() {\n"
                 "      fetch('/index/on')\n"
-                "        .then(response => response.text())\n"
-                "        .then(text => {\n"
-                "          document.getElementById('state').innerText = 'ON';\n"
-                "        });\n"
+                // "        .then(response => response.text())\n"
+                // "        .then(text => {\n"
+                // "          document.getElementById('status').innerText = 'ON';\n"
+                // "        });\n"
                 "    }\n"
                 "    \n"
                 "    function turnOff() {\n"
                 "      fetch('/index/off')\n"
-                "        .then(response => response.text())\n"
-                "        .then(text => {\n"
-                "          document.getElementById('state').innerText = 'OFF';\n"
-                "        });\n"
+                // "        .then(response => response.text())\n"
+                // "        .then(text => {\n"
+                // "          document.getElementById('status').innerText = 'OFF';\n"
+                //"        });\n"
                 "    }\n"
                 "  </script>\n"
-                "</body>\n"
-                "</html>";
-
+                " <h2>当前温度<span id=\"temp\"></span></h2>"
+                " <h2>当前湿度<span id=\"humidity\"></span></h2>"
+                "</body>";
   server.send(200, "text/html", html);
 }
 
@@ -231,9 +242,9 @@ void setup() {
   });
 
   // 添加温湿度数据端点
-  server.on("/data", HTTP_GET, [](AsyncWebServerRequest* request) {
+  server.on("/data", HTTP_GET, []() {
     String condition = "{\"temperature\":" + String(temperature) + ",\"humidity\":" + String(humidity) + "}";
-    request->send(200, "application/json", condition);
+    server.send(200, "application/json", condition);
   });
 
   //server.serveStatic("/bootstrap.min.css", LittleFS, "/bootstrap.min.css");
