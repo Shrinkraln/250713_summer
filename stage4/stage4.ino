@@ -6,6 +6,7 @@
 #include <SPI.h>
 #include <DHT.h>
 #include <Adafruit_SSD1306.h>
+#include <PubSubClient.h>
 
 //定义led引擎
 #define led_pin 12
@@ -21,13 +22,19 @@
 #define DHT_DATA 4
 #define DHTTYPE DHT11
 
+#define MQTT_SERVER "192.168.222.14"
+#define MQTT_PORT 1883
+
 SPIClass mySPI = SPIClass(VSPI);  //或者说HSPI不冲突都一样
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &mySPI, OLED_DC, OLED_RESET, OLED_CS);
 DHT dht(DHT_DATA, DHTTYPE);
+WiFiClient espClient;
+PubSubClient client(espClient);
+
 
 float temperature = 0;
 float humidity = 0;
-
+String condition;
 const char* ssid = "802";
 const char* password = "18113936661";
 unsigned long startAttemptTime = millis();
@@ -54,8 +61,8 @@ void handleRoot() {
                 "    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
                 "    <title>ESP32网页控制LED</title>\n"
                 "    <script>\n"
-                "     function fetchStatus (){fetch(\"/status\")  // 向 ESP32 请求 LED 状态\n"//fetch就是访问，会激发server.on
-                "        .then(res => res.text())\n"  //将返回对象转化为纯文本
+                "     function fetchStatus (){fetch(\"/status\")  // 向 ESP32 请求 LED 状态\n"  //fetch就是访问，会激发server.on
+                "        .then(res => res.text())\n"                                            //将返回对象转化为纯文本
                 "        .then(text => {\n"
                 "            document.getElementById(\"status\").innerText = text;\n"  //找到网页中ID为"status"的HTML元素，并将其文本内容设置为text变量的值
                 "        });}\n"
@@ -101,79 +108,7 @@ void handleRoot() {
   server.send(200, "text/html", html);
 }
 
-//访问未定义路径时进行
-//快闪两次
-void handleNotFound() {
-  String message = "File Not Found\n\n";  //使用string而不是char*，一是因为后续拼接，二是自动内存管理，char*多用于小规模确定字符串
-  message += "URI: ";
-  message += server.uri();
-  message += "\nMethod: ";
-  message += (server.method() == HTTP_GET) ? "GET" : "POST";
-  message += "\nArguments: ";
-  message += server.args();  //返回请求携带的参数总量
-  message += "\n";
-  for (uint8_t i = 0; i < server.args(); i++) {
-    message += " " + server.argName(i) + ": " + server.arg(i) + "\n";  //打印第i个参数名和第i个参数值
-  }
-  server.send(404, "text/plain", message);
-  for (int i = 0; i < 2; i++) {
-    digitalWrite(led_pin, HIGH);
-    delay(500);
-    digitalWrite(led_pin, LOW);
-  }
-}
-//读取DHT11数据并存储
-bool readSensorData() {
-  temperature = dht.readTemperature();
-  humidity = dht.readHumidity();
-  if (isnan(temperature) || isnan(humidity)) {
-    Serial.println("读取失败");
-    return false;
-  } else {
-    return true;
-  }
-}
-//setup里面初始化屏幕
-void initialOLED() {
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(WHITE);
-  display.setCursor(0, 0);
-  display.println("Hello World!");
-  display.ssd1306_command(255);  // 0-255
-  display.display();
-}
-//更新OLED屏幕数据
-void updateOLED() {
-  display.clearDisplay();  //清空缓冲区
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
-  display.print("Temp: ");
-  display.print(temperature);
-  display.println(" 'C");
-  display.print("Humidity: ");
-  display.print(humidity);
-  display.println("%");
-  display.ssd1306_command(255);  // 0-255
-  display.display();             //缓冲区上传到oled
-}
-//输出AHT11数据到串口监视器，排除DHT11故障
-void updateSerial() {
-  Serial.print("温度: ");
-  Serial.print(temperature);
-  Serial.print(" ℃，湿度: ");
-  Serial.print(humidity);
-  Serial.println(" %");
-}
-void setup() {
-  // put your setup code here, to run once:
-
-  //点灯
-  //设置引脚为输出模式
-  pinMode(led_pin, OUTPUT);
-  digitalWrite(led_pin, LOW);
-
+void setupWiFi() {
   //连接WiFi
   //配置串口屏的通信波特率
   Serial.begin(115200);  //功能：初始化硬件串口（UART），设置通信波特率为115200bps
@@ -217,6 +152,9 @@ void setup() {
   if (MDNS.begin("esp32")) {
     Serial.println("MDNS responder started");
   }
+}
+
+void setupServeron() {
   //监听根路径，访问时调用函数
   //server.on类型注册监听不会立即执行监听事件发生的函数，但是必须在ser.begin之前，真正的监听是loop函数里的handleclient
   //直接在index里http请求获取LED状态即可
@@ -243,19 +181,46 @@ void setup() {
 
   // 添加温湿度数据端点
   server.on("/data", HTTP_GET, []() {
-    String condition = "{\"temperature\":" + String(temperature) + ",\"humidity\":" + String(humidity) + "}";
     server.send(200, "application/json", condition);
   });
 
   //server.serveStatic("/bootstrap.min.css", LittleFS, "/bootstrap.min.css");
-  //启动ESO32网络服务
-  server.begin();
-  Serial.println("HTTP server started");
-
-
-  // SPI初始化
-  mySPI.begin(OLED_CLK, -1, OLED_MOSI, OLED_CS);  //MISO用不上
-  //mySPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));  // 设置为1MHz
+}
+//访问未定义路径时进行
+//快闪两次
+void handleNotFound() {
+  String message = "File Not Found\n\n";  //使用string而不是char*，一是因为后续拼接，二是自动内存管理，char*多用于小规模确定字符串
+  message += "URI: ";
+  message += server.uri();
+  message += "\nMethod: ";
+  message += (server.method() == HTTP_GET) ? "GET" : "POST";
+  message += "\nArguments: ";
+  message += server.args();  //返回请求携带的参数总量
+  message += "\n";
+  for (uint8_t i = 0; i < server.args(); i++) {
+    message += " " + server.argName(i) + ": " + server.arg(i) + "\n";  //打印第i个参数名和第i个参数值
+  }
+  server.send(404, "text/plain", message);
+  for (int i = 0; i < 2; i++) {
+    digitalWrite(led_pin, HIGH);
+    delay(500);
+    digitalWrite(led_pin, LOW);
+  }
+}
+//读取DHT11数据并存储
+bool readSensorData() {
+  temperature = dht.readTemperature();
+  humidity = dht.readHumidity();
+  if (isnan(temperature) || isnan(humidity)) {
+    Serial.println("读取失败");
+    return false;
+  } else {
+      condition = "{\"temperature\":" + String(temperature) + ",\"humidity\":" + String(humidity) + "}";
+    return true;
+  }
+}
+//setup里面初始化屏幕
+void initialOLED() {
   // OLED初始化
   // 初始化OLED
   pinMode(OLED_RESET, OUTPUT);
@@ -270,12 +235,95 @@ void setup() {
   } else {
     Serial.println("OLED初始化成功");
   }
+  // SPI初始化
+  mySPI.begin(OLED_CLK, -1, OLED_MOSI, OLED_CS);  //MISO用不上
+  //mySPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));  // 设置为1MHz
   display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  display.setCursor(0, 0);
+  display.println("Hello World!");
+  display.ssd1306_command(255);  // 0-255
+  display.display();
+}
+//更新OLED屏幕数据
+void updateOLED() {
+  display.clearDisplay();  //清空缓冲区
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.print("Temp: ");
+  display.print(temperature);
+  display.println(" 'C");
+  display.print("Humidity: ");
+  display.print(humidity);
+  display.println("%");
+  display.ssd1306_command(255);  // 0-255
+  display.display();             //缓冲区上传到oled
+}
+//输出AHT11数据到串口监视器，排除DHT11故障
+void updateSerial() {
+  Serial.print("温度: ");
+  Serial.print(temperature);
+  Serial.print(" ℃，湿度: ");
+  Serial.print(humidity);
+  Serial.println(" %");
+}
+
+void subscribe(char* topic, byte* message, unsigned int length) {
+  String msg;
+  for (int i = 0; i < length; i++) {
+    msg += (char)message[i];
+  }
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.print("] ");
+  Serial.println(msg);
+
+  if (msg.indexOf("\"led\":\"on\"") > 0) {
+    digitalWrite(LEDPIN, HIGH);
+  } else if (msg.indexOf("\"led\":\"off\"") > 0) {
+    digitalWrite(LEDPIN, LOW);
+  }
+}
+
+void reconnectToMQTT() {
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    if (client.connect("ESP32Client")) {
+      Serial.println("connected");
+      client.subscribe("esp32/control");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      delay(2000);
+    }
+  }
+}
+void setup() {
+  // put your setup code here, to run once:
+
+  //点灯
+  //设置引脚为输出模式
+  pinMode(led_pin, OUTPUT);
+  digitalWrite(led_pin, LOW);
+
+  setupWiFi();
+  setupServeron();
+
+  //启动ESO32网络服务
+  server.begin();
+  Serial.println("HTTP server started");
+
   //DHT初始化
   dht.begin();
   Serial.println("DHT初始化成功");
 
   initialOLED();
+
+  //连接MQTT服务器
+  client.setServer(MQTT_SERVER, MQTT_PORT);
+  client.setCallback(subscribe);
 }
 
 void loop() {
@@ -291,5 +339,11 @@ void loop() {
   }
   updateSerial();
   updateOLED();
-  delay(2000);
+  delay(1000);
+  if (!client.connected()) {
+    reconnect();
+  } else {
+    client.loop();
+    client.publish("esp32/condition", (char*) condition.c_str());
+  }
 }
